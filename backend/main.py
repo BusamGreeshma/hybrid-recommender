@@ -403,6 +403,72 @@ def get_recommendations(item_title: str, top_n: int = 10, explain: bool = Query(
     }
 
 
+@app.get("/api/similar/{item_id}")
+def get_similar_items(
+    item_id: str,
+    top_n: int = Query(10, ge=1, le=100),
+    category: Optional[str] = Query(
+        None,
+        description="Optional category name to restrict similar items.",
+    ),
+    explain: bool = Query(False),
+):
+    """Get similar products by item id, optionally scoped to one category."""
+    if not models["ready"] or models["item_df"] is None:
+        raise HTTPException(400, "Models not built. Build first via /api/build.")
+
+    item_df = models["item_df"]
+    if "id" not in item_df.columns:
+        raise HTTPException(400, "Model data does not include product ids.")
+
+    id_matches = item_df[item_df["id"].astype(str) == str(item_id)]
+    if id_matches.empty:
+        raise HTTPException(404, "Item not found.")
+
+    source = id_matches.iloc[0]
+    source_title = str(source.get("title", ""))
+    source_category = source.get("category", "")
+    requested_category = category.strip() if category else None
+
+    # Fetch a wider candidate pool before filtering so category filters still
+    # have enough results to fill the requested page.
+    candidate_limit = top_n if requested_category is None else min(top_n * 5, 100)
+    recs = models["hybrid"].recommend(
+        source_title,
+        top_n=candidate_limit,
+        explain=explain,
+    )
+    if requested_category is not None:
+        recs = [
+            rec
+            for rec in recs
+            if str(rec.get("category", "")).casefold() == requested_category.casefold()
+        ]
+    recs = recs[:top_n]
+
+    if not recs:
+        raise HTTPException(404, "No similar items found.")
+
+    return {
+        "query_item": {
+            "id": _json_scalar(source.get("id")),
+            "title": source_title,
+            "category": _json_scalar(source_category),
+        },
+        "category_filter": requested_category,
+        "recommendations": recs,
+        "total": len(recs),
+        "explain": explain,
+    }
+
+
+def _json_scalar(value):
+    """Return pandas/numpy scalar values in a JSON-serializable form."""
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
 # ── Weights ─────────────────────────────────────────────────────────
 
 @app.get("/api/weights")
