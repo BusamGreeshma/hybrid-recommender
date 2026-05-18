@@ -12,12 +12,12 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Any, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -41,6 +41,9 @@ app = FastAPI(title="Hybrid Recommender API", version="3.0")
 logger = logging.getLogger("hybrid_recommender.api")
 RESPONSE_TIME_HEADER = "X-Response-Time-ms"
 DEFAULT_SLOW_RESPONSE_THRESHOLD_MS = 1000.0
+CACHE_TTL_SECONDS = 300
+CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
+_response_cache: dict[str, tuple[float, Any]] = {}
 
 
 def _get_slow_response_threshold_ms() -> float:
@@ -48,6 +51,39 @@ def _get_slow_response_threshold_ms() -> float:
         return float(os.environ.get("RESPONSE_TIME_SLOW_MS", DEFAULT_SLOW_RESPONSE_THRESHOLD_MS))
     except ValueError:
         return DEFAULT_SLOW_RESPONSE_THRESHOLD_MS
+
+
+def _cache_key(*parts: Any) -> str:
+    return ":".join(str(part).strip().lower() for part in parts)
+
+
+def _get_cached_response(key: str) -> Any | None:
+    cached = _response_cache.get(key)
+    if not cached:
+        logger.info("cache_miss", extra={"cache_key": key})
+        return None
+
+    expires_at, value = cached
+    if expires_at <= time.time():
+        _response_cache.pop(key, None)
+        logger.info("cache_expired", extra={"cache_key": key})
+        return None
+
+    logger.info("cache_hit", extra={"cache_key": key})
+    return value
+
+
+def _set_cached_response(key: str, value: Any) -> None:
+    _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
+
+
+def _clear_response_cache() -> None:
+    _response_cache.clear()
+
+
+def _set_cache_headers(response: Response, status: str) -> None:
+    response.headers["Cache-Control"] = CACHE_CONTROL_VALUE
+    response.headers["X-Cache"] = status
 
 # CORS — restrict in production; allow localhost for development
 allowed_origins = os.environ.get("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000").split(",")
@@ -246,22 +282,22 @@ def dashboard():
 
 # ── Search (PostgreSQL FTS) ─────────────────────────────────────────
 @app.get("/api/search")
-def search_items(q: str = "", limit: int = 8):
-
-    mock_items = [
-        {"title": "iPhone 15", "rating": 4.8},
-        {"title": "Samsung Galaxy S24", "rating": 4.7},
-        {"title": "MacBook Air M3", "rating": 4.9},
-        {"title": "Sony WH-1000XM5", "rating": 4.6},
-        {"title": "Apple Watch Ultra", "rating": 4.7},
-    ]
-
-    return mock_items
-
+def search_items(
+    response: Response,
+    q: str = "",
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
     """
     Search products using PostgreSQL full-text search.
     Falls back to top-rated products when query is empty.
     """
+    cache_key = _cache_key("search", q, limit, offset)
+    cached = _get_cached_response(cache_key)
+    if cached is not None:
+        _set_cache_headers(response, "HIT")
+        return cached
+
     sb = get_supabase()
 
     if q.strip():
@@ -294,14 +330,29 @@ def search_items(q: str = "", limit: int = 8):
             .execute()
         products = result.data or []
 
-    filtered = [
-        item for item in mock_items
-        if q.lower() in item["title"].lower()
-    ]
+    # Format response
+    results = []
+    for p in products:
+        results.append({
+            'id': p.get('id'),
+            'title': p.get('title', ''),
+            'description': str(p.get('description', ''))[:200],
+            'category': p.get('category', ''),
+            'rating': p.get('rating', 0.0),
+            'avg_sentiment': p.get('avg_sentiment', 0.0),
+            'review_count': p.get('review_count', 0),
+            'rank': p.get('rank', 0.0),
+        })
 
-    return {
-        "items": filtered[:limit]
+    payload = {
+        "results": results,
+        "total": len(results),
+        "query": q,
+        "is_fallback": not q.strip(),
     }
+    _set_cached_response(cache_key, payload)
+    _set_cache_headers(response, "MISS")
+    return payload
 
 # ── Upload + Import ─────────────────────────────────────────────────
 
@@ -370,6 +421,7 @@ async def upload_dataset(file: UploadFile = File(...)):
                 errors.append(f"Batch {start}-{start+len(rows)}: {str(e)[:100]}")
 
         models["ready"] = False  # Force rebuild
+        _clear_response_cache()
 
         result = {
             "message": f"Imported {imported:,} products from {filename}",
@@ -475,6 +527,7 @@ def build_models():
     models["ready"] = True
     models["build_time"] = build_time
     models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
+    _clear_response_cache()
 
     logger.info(
         "Built recommendation models for %d items in %.2f seconds",
@@ -493,14 +546,36 @@ def build_models():
 # ── Recommendations ────────────────────────────────────────────────
 
 @app.get("/api/recommend/{item_title}")
-def get_recommendations(item_title: str, top_n: int = 10, explain: bool = Query(False), llm_explain: bool = Query(False)):
+def get_recommendations(
+    response: Response,
+    item_title: str,
+    top_n: int = 10,
+    explain: bool = Query(False),
+    llm_explain: bool = Query(False),
+):
     """Get hybrid recommendations for an item with optional LLM explanations."""
     if not models["ready"]:
         raise HTTPException(400, "Models not built. Build first via /api/build.")
+    weights = models["hybrid"].get_weights()
+    cache_key = _cache_key(
+        "recommend",
+        item_title,
+        top_n,
+        explain,
+        llm_explain,
+        weights.get("alpha"),
+        weights.get("beta"),
+        weights.get("gamma"),
+    )
+    cached = _get_cached_response(cache_key)
+    if cached is not None:
+        _set_cache_headers(response, "HIT")
+        return cached
+
     recs = models["hybrid"].recommend(item_title, top_n=top_n, explain=explain)
     if not recs:
         raise HTTPException(404, "Item not found or no recommendations.")
-    
+
     # Add LLM explanations if requested
     if llm_explain:
         try:
@@ -508,14 +583,17 @@ def get_recommendations(item_title: str, top_n: int = 10, explain: bool = Query(
             recs = explainer.explain_multiple(recs, item_title)
         except Exception as e:
             logger.warning(f"LLM explanation failed: {e}. Returning recommendations without LLM explanations.")
-    
-    return {
+
+    payload = {
         "query_item": item_title,
         "recommendations": recs,
-        "weights": models["hybrid"].get_weights(),
+        "weights": weights,
         "explain": explain,
         "llm_explain": llm_explain,
     }
+    _set_cached_response(cache_key, payload)
+    _set_cache_headers(response, "MISS")
+    return payload
 
 
 @app.get("/api/explain")
@@ -603,6 +681,7 @@ def update_weights(w: WeightsUpdate):
     if not models["ready"]:
         raise HTTPException(400, "Models not built.")
     models["hybrid"].set_weights(w.alpha, w.beta, w.gamma)
+    _clear_response_cache()
     return {"message": "Weights updated", "weights": models["hybrid"].get_weights()}
 
 
@@ -751,6 +830,7 @@ def create_purchase(data: PurchaseCreate):
         'rating': max(0, min(5, data.rating)),
         'review_text': data.review_text[:1000],
     }).execute()
+    _clear_response_cache()
     return {"purchase": result.data}
 # ── Dashboard ───────────────────────────────────────────────────────
 
