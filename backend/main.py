@@ -10,7 +10,7 @@ import logging
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -105,6 +105,39 @@ class PurchaseCreate(BaseModel):
     product_id: int
     rating: float = 0.0
     review_text: str = ""
+
+
+class RealtimeRecommendationRequest(BaseModel):
+    item_title: str
+    top_n: int = 10
+    explain: bool = False
+
+
+class RealtimeRecommendationHub:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, payload: dict):
+        disconnected = []
+        for websocket in self.active_connections:
+            try:
+                await websocket.send_json(payload)
+            except RuntimeError:
+                disconnected.append(websocket)
+
+        for websocket in disconnected:
+            self.disconnect(websocket)
+
+
+realtime_hub = RealtimeRecommendationHub()
 
 
 # ── Config (for frontend — serves only public keys) ─────────────────
@@ -390,6 +423,11 @@ def build_models():
 @app.get("/api/recommend/{item_title}")
 def get_recommendations(item_title: str, top_n: int = 10, explain: bool = Query(False)):
     """Get hybrid recommendations for an item."""
+    return _recommendation_payload(item_title, top_n=top_n, explain=explain)
+
+
+def _recommendation_payload(item_title: str, top_n: int = 10, explain: bool = False):
+    """Build a recommendation response shared by HTTP and real-time transports."""
     if not models["ready"]:
         raise HTTPException(400, "Models not built. Build first via /api/build.")
     recs = models["hybrid"].recommend(item_title, top_n=top_n, explain=explain)
@@ -401,6 +439,42 @@ def get_recommendations(item_title: str, top_n: int = 10, explain: bool = Query(
         "weights": models["hybrid"].get_weights(),
         "explain": explain,
     }
+
+
+@app.websocket("/ws/recommendations")
+async def recommendations_websocket(websocket: WebSocket):
+    """Stream recommendations whenever the browser reports a new interaction."""
+    await realtime_hub.connect(websocket)
+    try:
+        while True:
+            message = await websocket.receive_json()
+            request = RealtimeRecommendationRequest(**message)
+            top_n = max(1, min(50, request.top_n))
+            payload = _recommendation_payload(
+                request.item_title,
+                top_n=top_n,
+                explain=request.explain,
+            )
+            await websocket.send_json({"type": "recommendations", **payload})
+    except WebSocketDisconnect:
+        realtime_hub.disconnect(websocket)
+    except HTTPException as exc:
+        await websocket.send_json({"type": "error", "status_code": exc.status_code, "detail": exc.detail})
+        realtime_hub.disconnect(websocket)
+    except Exception as exc:
+        logger.exception("Recommendation websocket failed: %s", exc)
+        await websocket.send_json({"type": "error", "status_code": 500, "detail": "Recommendation stream failed."})
+        realtime_hub.disconnect(websocket)
+
+
+@app.post("/api/realtime/behavior")
+async def realtime_behavior_update(event: RealtimeRecommendationRequest):
+    """HTTP fallback for clients that cannot keep a WebSocket connection open."""
+    top_n = max(1, min(50, event.top_n))
+    payload = _recommendation_payload(event.item_title, top_n=top_n, explain=event.explain)
+    message = {"type": "recommendations", **payload}
+    await realtime_hub.broadcast(message)
+    return message
 
 
 # ── Weights ─────────────────────────────────────────────────────────
