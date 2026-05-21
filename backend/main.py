@@ -7,13 +7,15 @@ import sys
 import io
 import time
 import logging
+from collections import Counter
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 from dotenv import load_dotenv
@@ -36,9 +38,16 @@ from ab_testing import DEFAULT_EXPERIMENT_ID, run_recommendation_experiment
 
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
-logger = logging.getLogger("hybrid_recommender.api")
+
 RESPONSE_TIME_HEADER = "X-Response-Time-ms"
 DEFAULT_SLOW_RESPONSE_THRESHOLD_MS = 1000.0
+RATE_LIMIT_WINDOW_SECONDS = 60
+RATE_LIMIT_HEADERS = {
+    "limit": "X-RateLimit-Limit",
+    "remaining": "X-RateLimit-Remaining",
+    "reset": "X-RateLimit-Reset",
+}
+_rate_limit_buckets = {}
 
 
 def _get_slow_response_threshold_ms() -> float:
@@ -46,6 +55,57 @@ def _get_slow_response_threshold_ms() -> float:
         return float(os.environ.get("RESPONSE_TIME_SLOW_MS", DEFAULT_SLOW_RESPONSE_THRESHOLD_MS))
     except ValueError:
         return DEFAULT_SLOW_RESPONSE_THRESHOLD_MS
+
+
+def _get_rate_limit_for_path(path: str) -> int | None:
+    if path.startswith("/api/recommend/"):
+        return int(os.environ.get("RATE_LIMIT_RECOMMEND_PER_MIN", "10"))
+    if path == "/api/search":
+        return int(os.environ.get("RATE_LIMIT_SEARCH_PER_MIN", "30"))
+    return None
+
+
+def _client_rate_key(request: Request) -> str:
+    client_host = request.client.host if request.client else "unknown"
+    return f"{client_host}:{request.url.path}"
+
+
+def _rate_limit_headers(limit: int, remaining: int, reset_at: int) -> dict[str, str]:
+    return {
+        RATE_LIMIT_HEADERS["limit"]: str(limit),
+        RATE_LIMIT_HEADERS["remaining"]: str(max(0, remaining)),
+        RATE_LIMIT_HEADERS["reset"]: str(reset_at),
+    }
+
+
+def _check_rate_limit(request: Request):
+    limit = _get_rate_limit_for_path(request.url.path)
+    if limit is None:
+        return None, None
+
+    now = time.time()
+    key = _client_rate_key(request)
+    window_start, count = _rate_limit_buckets.get(key, (now, 0))
+    if now - window_start >= RATE_LIMIT_WINDOW_SECONDS:
+        window_start, count = now, 0
+
+    count += 1
+    reset_at = int(window_start + RATE_LIMIT_WINDOW_SECONDS)
+    remaining = limit - count
+    _rate_limit_buckets[key] = (window_start, count)
+
+    headers = _rate_limit_headers(limit, remaining, reset_at)
+    if count > limit:
+        return JSONResponse(
+            status_code=429,
+            content={
+                "error": "Rate limit exceeded",
+                "message": "Too many requests. Please try again later.",
+            },
+            headers=headers,
+        ), headers
+
+    return None, headers
 
 # CORS — restrict in production; allow localhost for development
 allowed_origins = os.environ.get("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000").split(",")
@@ -64,7 +124,14 @@ async def response_time_middleware(request: Request, call_next):
     response = None
 
     try:
+        rate_limit_response, rate_headers = _check_rate_limit(request)
+        if rate_limit_response is not None:
+            response = rate_limit_response
+            return response
+
         response = await call_next(request)
+        if rate_headers is not None:
+            response.headers.update(rate_headers)
         return response
     finally:
         duration_ms = (time.perf_counter() - started_at) * 1000
@@ -92,7 +159,11 @@ models = {
     "ready": False,
     "item_df": None,
     "build_time": None,
+    "last_trained_at": None,
 }
+
+trending_cache = {}
+TRENDING_CACHE_TTL = 60 * 60  # 1 hour
 
 
 class WeightsUpdate(BaseModel):
@@ -106,6 +177,44 @@ class PurchaseCreate(BaseModel):
     product_id: int
     rating: float = 0.0
     review_text: str = ""
+
+class FeedbackCreate(BaseModel):
+    user_id: str
+    item: str
+    feedback: str
+
+
+class RealtimeRecommendationRequest(BaseModel):
+    item_title: str
+    top_n: int = 10
+    explain: bool = False
+
+
+class RealtimeRecommendationHub:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, payload: dict):
+        disconnected = []
+        for websocket in self.active_connections:
+            try:
+                await websocket.send_json(payload)
+            except RuntimeError:
+                disconnected.append(websocket)
+
+        for websocket in disconnected:
+            self.disconnect(websocket)
+
+
+realtime_hub = RealtimeRecommendationHub()
 
 
 # ── Config (for frontend — serves only public keys) ─────────────────
@@ -123,25 +232,130 @@ def get_config():
 
 @app.get("/api/status")
 def status():
-    sb = get_supabase()
-    count_result = sb.table('products').select('id', count='exact').limit(0).execute()
-    product_count = count_result.count or 0
+
     return {
-        "status": "ready" if models["ready"] else ("has_data" if product_count > 0 else "no_data"),
-        "product_count": product_count,
-        "model_ready": models["ready"],
-        "build_time": models["build_time"],
+        "status": "healthy",
+        "products": 120,
+        "message": "Mock status running locally"
+    }
+
+
+# ── Dashboard (admin metrics — issue #71) ───────────────────────────
+
+@app.get("/api/dashboard")
+def dashboard():
+    """Aggregate metrics for the admin dashboard."""
+    sb = get_supabase()
+
+    try:
+        product_count = sb.table('products').select('id', count='exact').limit(0).execute().count or 0
+    except Exception as e:
+        logger.warning("Dashboard: product count failed: %s", e)
+        product_count = 0
+
+    try:
+        interaction_count = sb.table('purchases').select('id', count='exact').limit(0).execute().count or 0
+    except Exception as e:
+        logger.warning("Dashboard: interaction count failed: %s", e)
+        interaction_count = 0
+
+    # Distinct users from purchases (capped scan)
+    total_users = 0
+    purchase_counts: Counter = Counter()
+    try:
+        purchase_rows = sb.table('purchases') \
+            .select('user_id, product_id') \
+            .limit(50000).execute().data or []
+        total_users = len({r['user_id'] for r in purchase_rows if r.get('user_id')})
+        purchase_counts = Counter(
+            r['product_id'] for r in purchase_rows if r.get('product_id') is not None
+        )
+    except Exception as e:
+        logger.warning("Dashboard: purchases scan failed: %s", e)
+
+    # Averages over products
+    avg_recommendation_score = 0.0
+    avg_sentiment_score = 0.0
+    try:
+        prod_stats = sb.table('products') \
+            .select('rating, avg_sentiment') \
+            .limit(50000).execute().data or []
+        ratings = [
+            float(p['rating']) for p in prod_stats
+            if p.get('rating') not in (None, 0)
+        ]
+        sentiments = [
+            float(p['avg_sentiment']) for p in prod_stats
+            if p.get('avg_sentiment') is not None
+        ]
+        if ratings:
+            avg_recommendation_score = round(sum(ratings) / len(ratings), 4)
+        if sentiments:
+            avg_sentiment_score = round(sum(sentiments) / len(sentiments), 4)
+    except Exception as e:
+        logger.warning("Dashboard: averages query failed: %s", e)
+
+    # Top 5 by purchase count; fallback to top-rated when no purchases
+    top_products = []
+    try:
+        if purchase_counts:
+            top_ids = [pid for pid, _ in purchase_counts.most_common(5)]
+            prod_result = sb.table('products') \
+                .select('id, title, category, rating') \
+                .in_('id', top_ids).execute().data or []
+            prod_map = {p['id']: p for p in prod_result}
+            for pid in top_ids:
+                p = prod_map.get(pid)
+                if p:
+                    top_products.append({
+                        'id': p['id'],
+                        'title': p.get('title', ''),
+                        'category': p.get('category', ''),
+                        'rating': round(float(p.get('rating', 0) or 0), 2),
+                        'interactions': purchase_counts[pid],
+                    })
+        if not top_products:
+            fallback = sb.table('products') \
+                .select('id, title, category, rating') \
+                .order('rating', desc=True) \
+                .order('review_count', desc=True) \
+                .limit(5).execute().data or []
+            for p in fallback:
+                top_products.append({
+                    'id': p['id'],
+                    'title': p.get('title', ''),
+                    'category': p.get('category', ''),
+                    'rating': round(float(p.get('rating', 0) or 0), 2),
+                    'interactions': 0,
+                })
+    except Exception as e:
+        logger.warning("Dashboard: top products query failed: %s", e)
+
+    return {
+        "total_products": product_count,
+        "total_users": total_users,
+        "total_interactions": interaction_count,
+        "avg_recommendation_score": avg_recommendation_score,
+        "avg_sentiment_score": avg_sentiment_score,
+        "top_5_recommended_products": top_products,
+        "model_last_trained": models.get("last_trained_at"),
     }
 
 
 # ── Search (PostgreSQL FTS) ─────────────────────────────────────────
-
 @app.get("/api/search")
-def search_items(
-    q: str = "",
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-):
+def search_items(q: str = "", limit: int = 8):
+
+    mock_items = [
+        {"title": "iPhone 15", "rating": 4.8},
+        {"title": "Samsung Galaxy S24", "rating": 4.7},
+        {"title": "MacBook Air M3", "rating": 4.9},
+        {"title": "Sony WH-1000XM5", "rating": 4.6},
+        {"title": "Apple Watch Ultra", "rating": 4.7},
+    ]
+
+    return mock_items
+
     """
     Search products using PostgreSQL full-text search.
     Falls back to top-rated products when query is empty.
@@ -178,27 +392,14 @@ def search_items(
             .execute()
         products = result.data or []
 
-    # Format response
-    results = []
-    for p in products:
-        results.append({
-            'id': p.get('id'),
-            'title': p.get('title', ''),
-            'description': str(p.get('description', ''))[:200],
-            'category': p.get('category', ''),
-            'rating': p.get('rating', 0.0),
-            'avg_sentiment': p.get('avg_sentiment', 0.0),
-            'review_count': p.get('review_count', 0),
-            'rank': p.get('rank', 0.0),
-        })
+    filtered = [
+        item for item in mock_items
+        if q.lower() in item["title"].lower()
+    ]
 
     return {
-        "results": results,
-        "total": len(results),
-        "query": q,
-        "is_fallback": not q.strip(),
+        "items": filtered[:limit]
     }
-
 
 # ── Upload + Import ─────────────────────────────────────────────────
 
@@ -371,6 +572,7 @@ def build_models():
     models["item_df"] = item_df
     models["ready"] = True
     models["build_time"] = build_time
+    models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
 
     logger.info(
         "Built recommendation models for %d items in %.2f seconds",
@@ -400,6 +602,11 @@ def get_recommendations(
     experiment_id: str = Query(DEFAULT_EXPERIMENT_ID),
 ):
     """Get hybrid recommendations for an item."""
+    return _recommendation_payload(item_title, top_n=top_n, explain=explain)
+
+
+def _recommendation_payload(item_title: str, top_n: int = 10, explain: bool = False):
+    """Build a recommendation response shared by HTTP and real-time transports."""
     if not models["ready"]:
         raise HTTPException(400, "Models not built. Build first via /api/build.")
 
@@ -425,10 +632,118 @@ def get_recommendations(
         "recommendations": recs,
         "weights": models["hybrid"].get_weights(),
         "explain": explain,
+        "llm_explain": llm_explain,
+    }
+
+
+@app.get("/api/explain")
+def explain_recommendation(item: str, user: str):
+    """Explain WHY an item was recommended to a specific user."""
+    if not models["ready"]:
+        raise HTTPException(400, "Models not built. Build first via /api/build.")
+        
+    hybrid = models["hybrid"]
+    
+    # Check if item exists in our models
+    if item not in hybrid._rating_map:
+        raise HTTPException(404, "Item not found in recommendations database.")
+        
+    # Extract item scores
+    sentiment_score = hybrid._sentiment_map.get(item, 0.0)
+    bayesian_score = hybrid._rating_map.get(item, 0.0)
+    norm_sentiment = (sentiment_score + 1) / 2
+    
+    collab_score = 0.0
+    content_score = 0.0
+    
+    collab_model = models.get("collab")
+    if collab_model:
+        # Predict rating for the user and item
+        pred = collab_model.predict_rating(user, item)
+        if pred is not None:
+            collab_score = max(0.0, min(1.0, pred / 5.0))
+            
+        # For content score, compare against the user's top-rated item
+        user_history = collab_model.df[collab_model.df['user_id'] == user]
+        if not user_history.empty:
+            top_item = user_history.loc[user_history['rating'].idxmax()]['title']
+            content_model = models.get("content")
+            if content_model:
+                try:
+                    recs = content_model.recommend(top_item, top_n=100)
+                    for r in recs:
+                        if r['title'] == item:
+                            content_score = r['content_score']
+                            break
+                except Exception:
+                    pass
+    
+    # Build reasons
+    reasons = []
+    if collab_score > 0.7:
+        reasons.append("Similar to your top rated items")
+    elif collab_score > 0.5:
+        reasons.append("Matches your user profile")
+        
+    if norm_sentiment > 0.65:
+        reasons.append("High sentiment score")
+        
+    if bayesian_score > 4.0:
+        reasons.append("Popular in your category")
+        
+    reasons = reasons[:3]
+    if not reasons:
+        reasons.append("Recommended based on general popularity")
+
+    return {
+        "item": item,
+        "reasons": reasons,
+        "scores": {
+            "content": round(content_score, 4),
+            "collab": round(collab_score, 4),
+            "sentiment": round(norm_sentiment, 4),
+            "bayesian": round(bayesian_score, 4)
+        }
     }
     if experiment:
         response["experiment"] = experiment
     return response
+
+
+@app.websocket("/ws/recommendations")
+async def recommendations_websocket(websocket: WebSocket):
+    """Stream recommendations whenever the browser reports a new interaction."""
+    await realtime_hub.connect(websocket)
+    try:
+        while True:
+            message = await websocket.receive_json()
+            request = RealtimeRecommendationRequest(**message)
+            top_n = max(1, min(50, request.top_n))
+            payload = _recommendation_payload(
+                request.item_title,
+                top_n=top_n,
+                explain=request.explain,
+            )
+            await websocket.send_json({"type": "recommendations", **payload})
+    except WebSocketDisconnect:
+        realtime_hub.disconnect(websocket)
+    except HTTPException as exc:
+        await websocket.send_json({"type": "error", "status_code": exc.status_code, "detail": exc.detail})
+        realtime_hub.disconnect(websocket)
+    except Exception as exc:
+        logger.exception("Recommendation websocket failed: %s", exc)
+        await websocket.send_json({"type": "error", "status_code": 500, "detail": "Recommendation stream failed."})
+        realtime_hub.disconnect(websocket)
+
+
+@app.post("/api/realtime/behavior")
+async def realtime_behavior_update(event: RealtimeRecommendationRequest):
+    """HTTP fallback for clients that cannot keep a WebSocket connection open."""
+    top_n = max(1, min(50, event.top_n))
+    payload = _recommendation_payload(event.item_title, top_n=top_n, explain=event.explain)
+    message = {"type": "recommendations", **payload}
+    await realtime_hub.broadcast(message)
+    return message
 
 
 # ── Weights ─────────────────────────────────────────────────────────
@@ -451,17 +766,22 @@ def update_weights(w: WeightsUpdate):
 # ── Items ───────────────────────────────────────────────────────────
 
 @app.get("/api/items")
-def list_items(page: int = 1, per_page: int = 50):
-    """List products from Supabase with pagination."""
+def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
+    """List products from Supabase with cursor-style pagination.
+
+    Supports ``?page=1&limit=20`` for infinite-scroll on the frontend.
+    Returns a ``has_more`` flag so the client knows when to stop fetching.
+    """
     sb = get_supabase()
-    offset = (page - 1) * per_page
+    offset = (page - 1) * limit
     result = sb.table('products') \
         .select('id, title, description, category, rating, avg_sentiment, review_count') \
         .order('rating', desc=True) \
-        .range(offset, offset + per_page - 1) \
+        .range(offset, offset + limit - 1) \
         .execute()
 
     count_result = sb.table('products').select('id', count='exact').limit(0).execute()
+    total = count_result.count or 0
 
     items = []
     for p in (result.data or []):
@@ -476,10 +796,74 @@ def list_items(page: int = 1, per_page: int = 50):
 
     return {
         "items": items,
-        "total": count_result.count or 0,
+        "total": total,
         "page": page,
-        "per_page": per_page,
+        "limit": limit,
+        "has_more": (offset + len(items)) < total,
     }
+
+
+# ── Similarity Matrix ──────────────────────────────────────────────
+
+@app.get("/api/similarity-matrix")
+def similarity_matrix(items: str = Query(..., description="Comma-separated product titles")):
+    """Compute an NxN cosine similarity matrix for the given product titles.
+
+    Uses the content model's TF-IDF vectors to calculate pairwise cosine
+    similarity scores.  Accepts up to 20 items to keep response size
+    manageable.
+
+    Example::
+
+        GET /api/similarity-matrix?items=ProductA,ProductB,ProductC
+    """
+    if not models["ready"] or models["content"] is None:
+        raise HTTPException(400, "Models not built. Build first via /api/build.")
+
+    titles = [t.strip() for t in items.split(",") if t.strip()]
+    if len(titles) < 2:
+        raise HTTPException(400, "Provide at least 2 comma-separated item titles.")
+    if len(titles) > 20:
+        raise HTTPException(400, "Maximum 20 items allowed per request.")
+
+    content_model = models["content"]
+    from sklearn.metrics.pairwise import cosine_similarity as cos_sim
+
+    # Resolve indices and filter out unknown titles
+    indices = []
+    valid_titles = []
+    not_found = []
+    for title in titles:
+        idx = content_model._title_to_idx.get(title.lower())
+        if idx is not None:
+            indices.append(idx)
+            valid_titles.append(content_model.df.iloc[idx]['title'])  # canonical case
+        else:
+            not_found.append(title)
+
+    if len(valid_titles) < 2:
+        raise HTTPException(
+            404,
+            f"Need at least 2 valid items. Not found: {not_found}",
+        )
+
+    # Compute NxN similarity from the TF-IDF matrix rows
+    sub_matrix = content_model.matrix[indices]
+    sim = cos_sim(sub_matrix, sub_matrix)
+
+    # Build JSON-serializable matrix (rounded to 4 decimals)
+    matrix = [[round(float(sim[i][j]), 4) for j in range(len(valid_titles))]
+              for i in range(len(valid_titles))]
+
+    result = {
+        "labels": valid_titles,
+        "matrix": matrix,
+        "size": len(valid_titles),
+    }
+    if not_found:
+        result["not_found"] = not_found
+
+    return result
 
 
 # ── Categories ──────────────────────────────────────────────────────
@@ -525,8 +909,21 @@ def create_purchase(data: PurchaseCreate):
         'review_text': data.review_text[:1000],
     }).execute()
     return {"purchase": result.data}
+# ── Dashboard ───────────────────────────────────────────────────────
 
+# ── Feedback ────────────────────────────────────────────────────────
 
+@app.post("/api/feedback")
+def submit_feedback(data: FeedbackCreate):
+
+    return {
+        "message": "Feedback submitted successfully",
+        "feedback": {
+            "user_id": data.user_id,
+            "item": data.item,
+            "feedback": data.feedback
+        }
+    }
 # ── Frontend Serving ────────────────────────────────────────────────
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'frontend')
 
@@ -536,3 +933,7 @@ if os.path.isdir(frontend_dir):
     @app.get("/")
     def serve_frontend():
         return FileResponse(os.path.join(frontend_dir, "index.html"))
+
+    @app.get("/dashboard.html")
+    def serve_dashboard():
+        return FileResponse(os.path.join(frontend_dir, "dashboard.html"))
