@@ -1,8 +1,8 @@
-name: 🤖 Smart PR Bot
+name: GSSoC PR Bot
 
 on:
   pull_request_target:
-    types: [opened, reopened, edited, synchronize, labeled, closed]
+    types: [opened, reopened]
   pull_request_review:
     types: [submitted]
 
@@ -12,244 +12,106 @@ permissions:
   contents: write
 
 jobs:
-  # ── Job 1: Welcome + checklist on new PR ─────────────────────────────
-  welcome-and-check:
+  welcome-pr:
+    if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
-    if: >
-      github.event_name == 'pull_request_target' &&
-      (github.event.action == 'opened' || github.event.action == 'reopened')
     steps:
-      - name: Welcome PR and validate description
+      - name: Welcome PR and add mandatory labels
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const pr     = context.payload.pull_request;
+            const pr = context.payload.pull_request;
             const sender = pr.user.login;
-            const owner  = context.repo.owner;
-            const repo   = context.repo.repo;
-            const num    = pr.number;
-            const body   = pr.body || '';
-            const title  = (pr.title || '').toLowerCase();
-            const isFirst = pr.author_association === 'FIRST_TIME_CONTRIBUTOR' || pr.author_association === 'NONE';
-
-            // ── MANDATORY labels on every PR ──
-            const mandatoryLabels = ['gssoc:approved', 'mentor:leonagoel'];
-            try {
-              await github.rest.issues.addLabels({ owner, repo, issue_number: num, labels: mandatoryLabels });
-            } catch (e) {}
-
-            // ── Additional labels from PR title ──
-            const extraLabels = [];
-            if (/bug|fix|hotfix|patch/.test(title))           extraLabels.push('type:bug');
-            if (/feat|feature|add|new|implement/.test(title)) extraLabels.push('type:feature');
-            if (/doc|readme|comment|typo/.test(title))        extraLabels.push('type:docs');
-            if (/test|spec|coverage/.test(title))             extraLabels.push('type:testing');
-            if (/refactor|cleanup/.test(title))               extraLabels.push('type:refactor');
-            if (/frontend|ui|css|html/.test(title))           extraLabels.push('frontend');
-            if (/backend|api|server|db/.test(title))          extraLabels.push('backend');
-            extraLabels.push('status:review-needed');
-            try {
-              await github.rest.issues.addLabels({ owner, repo, issue_number: num, labels: extraLabels });
-            } catch (e) {}
-
-            // ── Checklist validation ──
-            const checks = {
-              'What changed section': body.toLowerCase().includes('what changed'),
-              'Why section':          body.toLowerCase().includes('why'),
-              'How to test section':  body.toLowerCase().includes('how to test'),
-              'Linked issue':         /closes\s*#\d+|fixes\s*#\d+|related issue/i.test(body),
-              'Checklist completed':  body.includes('[x]') || body.includes('[X]'),
-              'AI disclosure':        body.toLowerCase().includes('ai assistance') || body.toLowerCase().includes('did not use ai'),
-            };
-            const allGood = Object.values(checks).every(Boolean);
-            const rows = Object.entries(checks)
-              .map(([k,v]) => `| ${v ? '✅' : '❌'} | ${k} |`)
-              .join('\n');
-
-            const greeting = isFirst
-              ? `🎉 **Welcome to Hybrid Recommender, @${sender}! This is your first contribution!**`
-              : `👋 **Thanks for your PR, @${sender}!**`;
-
-            await github.rest.issues.createComment({
-              owner, repo, issue_number: num,
-              body: [
-                greeting,
-                ``,
-                `## 📋 PR Description Checklist`,
-                `| Status | Item |`,
-                `|--------|------|`,
-                rows,
-                allGood ? `\n> ✅ **PR description looks complete!**` : `\n> ⚠️ **Some required sections are missing.** Please update your PR description.`,
-                ``,
-                `## 🏷️ Labels Applied`,
-                `- ✅ \`gssoc:approved\` — this PR counts for GSSoC leaderboard points`,
-                `- ✅ \`mentor:leonagoel\` — mentor review points recorded`,
-                ``,
-                `## 🔄 What happens next`,
-                `1. 🔍 **Review** by @${owner}`,
-                `2. ✅ **CI checks** must pass`,
-                `3. 🔀 **Auto-merge** triggers once approved`,
-                `4. 🏆 **Points on leaderboard** at 4 AM IST`,
-                ``,
-                `⏱️ Respond to review comments within **48 hours**.`,
-                `📖 [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md)`,
-              ].join('\n')
-            });
-
-      - name: Request review from owner
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const pr    = context.payload.pull_request;
             const owner = context.repo.owner;
-            const repo  = context.repo.repo;
-            if (pr.user.login === owner) return;
+            const repo = context.repo.repo;
+            const prNumber = pr.number;
+            const isFirstTime = pr.author_association === 'FIRST_TIME_CONTRIBUTOR' || pr.author_association === 'NONE';
+            const body = pr.body || '';
+            const title = pr.title.toLowerCase();
+
+            const mandatoryLabels = ['gssoc:approved', 'mentor:leonagoel', 'status:review-needed'];
+
+            if (title.startsWith('feat') || title.startsWith('feature')) mandatoryLabels.push('type:feature');
+            else if (title.startsWith('fix') || title.startsWith('bug')) mandatoryLabels.push('type:bug');
+            else if (title.startsWith('docs')) mandatoryLabels.push('type:docs');
+            else if (title.startsWith('refactor')) mandatoryLabels.push('type:refactor');
+            else if (title.startsWith('test')) mandatoryLabels.push('type:testing');
+            else if (title.startsWith('chore') || title.startsWith('ci')) mandatoryLabels.push('type:devops');
+
+            await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber, labels: mandatoryLabels });
+
+            const hasWhatChanged = body.toLowerCase().includes('what changed');
+            const hasWhy = body.toLowerCase().includes('why');
+            const hasHowToTest = body.toLowerCase().includes('how to test');
+            const hasRelatedIssue = /closes #|fixes #|related issue/i.test(body);
+            const allGood = hasWhatChanged && hasWhy && hasHowToTest && hasRelatedIssue;
+
+            let checklist = '';
+            checklist += (hasWhatChanged ? 'YES' : 'NO') + ' - What changed section\n';
+            checklist += (hasWhy ? 'YES' : 'NO') + ' - Why section\n';
+            checklist += (hasHowToTest ? 'YES' : 'NO') + ' - How to test section\n';
+            checklist += (hasRelatedIssue ? 'YES' : 'NO') + ' - Related issue linked\n';
+
+            let msg = isFirstTime
+              ? 'Welcome to Hybrid Recommender, @' + sender + '! This is your first contribution here!\n\n'
+              : 'Thanks for your PR, @' + sender + '!\n\n';
+
+            msg += 'Labels added: gssoc:approved | mentor:leonagoel | status:review-needed\n\n';
+            msg += 'PR Description Checklist:\n' + checklist + '\n';
+            msg += allGood ? 'PR description looks complete!\n\n' : 'Some required sections are missing. Please update your PR description.\n\n';
+            msg += 'What happens next:\n';
+            msg += '1. @leonagoel will review your changes\n';
+            msg += '2. CI checks must pass\n';
+            msg += '3. Once approved, this PR will be auto-merged\n\n';
+            msg += 'Please respond to review comments within 48 hours.';
+
+            await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: msg });
+
             try {
-              await github.rest.pulls.requestReviewers({
-                owner, repo, pull_number: pr.number,
-                reviewers: [owner]
-              });
-            } catch (e) {}
-
-  # ── Job 2: Ensure mandatory labels on every label event too ──────────
-  ensure-mandatory-labels:
-    runs-on: ubuntu-latest
-    if: >
-      github.event_name == 'pull_request_target' &&
-      github.event.action == 'labeled'
-    steps:
-      - name: Always ensure gssoc:approved and mentor:leonagoel are present
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const pr     = context.payload.pull_request;
-            const owner  = context.repo.owner;
-            const repo   = context.repo.repo;
-            const num    = pr.number;
-            const labels = pr.labels.map(l => l.name);
-            const missing = ['gssoc:approved', 'mentor:leonagoel'].filter(l => !labels.includes(l));
-            if (missing.length > 0) {
-              try {
-                await github.rest.issues.addLabels({ owner, repo, issue_number: num, labels: missing });
-              } catch (e) {}
+              await github.rest.pulls.requestReviewers({ owner, repo, pull_number: prNumber, reviewers: ['leonagoel'] });
+            } catch(e) {
+              console.log('Could not request review:', e.message);
             }
 
-  # ── Job 3: Add mentor label + comment when review submitted ──────────
-  mentor-label-on-review:
+  auto-merge-on-approval:
+    if: github.event_name == 'pull_request_review' && github.event.review.state == 'approved'
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request_review'
     steps:
-      - name: Add mentor label and handle review state
+      - name: Merge PR on approval
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.GH_PAT }}
           script: |
-            const review   = context.payload.review;
-            const pr       = context.payload.pull_request;
-            const reviewer = review.user.login;
-            const owner    = context.repo.owner;
-            const repo     = context.repo.repo;
-            const num      = pr.number;
-
-            // Always add both mandatory labels on any review
-            try {
-              await github.rest.issues.addLabels({
-                owner, repo, issue_number: num,
-                labels: ['gssoc:approved', `mentor:${reviewer}`]
-              });
-            } catch (e) {}
-
-            if (review.state === 'APPROVED') {
-              try {
-                await github.rest.issues.addLabels({
-                  owner, repo, issue_number: num,
-                  labels: ['status:approved']
-                });
-                await github.rest.issues.removeLabel({ owner, repo, issue_number: num, name: 'status:review-needed' });
-              } catch (e) {}
-              await github.rest.issues.createComment({
-                owner, repo, issue_number: num,
-                body: [
-                  `## ✅ PR Approved by @${reviewer}`,
-                  ``,
-                  `| Label | Status |`,
-                  `|-------|--------|`,
-                  `| \`gssoc:approved\` | ✅ Applied — counts for GSSoC leaderboard |`,
-                  `| \`mentor:${reviewer}\` | ✅ Applied — mentor review points recorded |`,
-                  ``,
-                  `🤖 **Auto-merging now...**`,
-                ].join('\n')
-              });
-
-              // Auto-merge
-              try {
-                await github.rest.pulls.merge({
-                  owner, repo, pull_number: num,
-                  merge_method: 'squash',
-                  commit_title: `${pr.title} (#${num})`,
-                });
-              } catch (e) {
-                await github.rest.issues.createComment({
-                  owner, repo, issue_number: num,
-                  body: `⏳ **Waiting for CI** — will auto-merge once all checks pass.`
-                });
-              }
-            }
-
-            if (review.state === 'CHANGES_REQUESTED') {
-              try {
-                await github.rest.issues.addLabels({ owner, repo, issue_number: num, labels: ['status:changes-requested'] });
-                await github.rest.issues.removeLabel({ owner, repo, issue_number: num, name: 'status:review-needed' });
-              } catch (e) {}
-              await github.rest.issues.createComment({
-                owner, repo, issue_number: num,
-                body: `## 🔄 Changes Requested by @${reviewer}\n\nPlease address the review comments and push your changes.\n\n⏱️ **48 hours** to respond or the PR may be closed.`
-              });
-            }
-
-  # ── Job 4: Mandatory labels + comment on merge ───────────────────────
-  on-pr-merged:
-    runs-on: ubuntu-latest
-    if: >
-      github.event_name == 'pull_request_target' &&
-      github.event.action == 'closed' &&
-      github.event.pull_request.merged == true
-    steps:
-      - name: Post merge confirmation with GSSoC info
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const pr    = context.payload.pull_request;
+            const prNumber = context.payload.pull_request.number;
             const owner = context.repo.owner;
-            const repo  = context.repo.repo;
-            const num   = pr.number;
+            const repo = context.repo.repo;
+            const reviewer = context.payload.review.user.login;
 
-            // Final safety net — ensure mandatory labels exist on merged PR
             try {
-              await github.rest.issues.addLabels({
-                owner, repo, issue_number: num,
-                labels: ['gssoc:approved', 'mentor:leonagoel']
-              });
-            } catch (e) {}
+              await github.rest.issues.removeLabel({ owner, repo, issue_number: prNumber, name: 'status:review-needed' });
+            } catch(e) {}
 
-            await github.rest.issues.createComment({
-              owner, repo, issue_number: num,
-              body: [
-                `## 🎉 PR Merged! Contribution Counted for GSSoC`,
-                ``,
-                `| Label | Purpose |`,
-                `|-------|---------|`,
-                `| ✅ \`gssoc:approved\` | Your contribution points are recorded |`,
-                `| ✅ \`mentor:leonagoel\` | Mentor review points recorded |`,
-                ``,
-                `**@${pr.user.login}** — your points will appear on the leaderboard at **4 AM IST**.`,
-                ``,
-                `🏆 [Check GSSoC Leaderboard](https://gssoc.girlscript.org/leaderboard)`,
-                ``,
-                `Thank you for contributing! 🚀`,
-              ].join('\n')
-            });
+            try {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber, labels: ['status:approved'] });
+            } catch(e) {}
+
+            try {
+              await github.rest.pulls.merge({
+                owner,
+                repo,
+                pull_number: prNumber,
+                merge_method: 'squash',
+                commit_title: context.payload.pull_request.title + ' (#' + prNumber + ')'
+              });
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: prNumber,
+                body: 'Merged! Approved by @' + reviewer + '. Points will reflect at next 4 AM IST leaderboard refresh.'
+              });
+            } catch(e) {
+              console.log('Merge failed:', e.message);
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: prNumber,
+                body: 'Approved by @' + reviewer + '! Could not auto-merge: ' + e.message + '\n\nPlease merge manually.'
+              });
+            }

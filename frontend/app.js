@@ -36,7 +36,10 @@ const state = {
     selectedSearchIdx: -1,
     isAuthSignUp: false,
     modelReady: false,
-    scrollObserver: null,
+    recommendationSocket: null,
+    realtimeReady: false,
+    realtimeFallbackTimer: null,
+    pendingRecommendationTitle: null,
 };
 
 // ── DOM Elements ────────────────────────────────────────────────────
@@ -97,6 +100,32 @@ function toast(message, type = 'info') {
         el.style.transition = '300ms ease';
         setTimeout(() => el.remove(), 300);
     }, 3500);
+}
+
+function createSkeletonCard() {
+    return `
+        <div class="product-card skeleton-card">
+            <div class="skeleton skeleton-image"></div>
+
+            <div class="product-info">
+                <div class="skeleton skeleton-title"></div>
+                <div class="skeleton skeleton-text"></div>
+                <div class="skeleton skeleton-text short"></div>
+
+                <div class="skeleton-footer">
+                    <div class="skeleton skeleton-price"></div>
+                    <div class="skeleton skeleton-button"></div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function showSkeletons(container, count = 8) {
+    container.innerHTML = Array(count)
+        .fill("")
+        .map(() => createSkeletonCard())
+        .join("");
 }
 
 function renderStars(rating) {
@@ -364,12 +393,14 @@ async function loadProducts(append = false) {
     state.isLoading = true;
 
     if (!append) {
-        els.productGrid.innerHTML = '';
-        els.skeletonLoader.hidden = false;
-        els.infiniteEnd.hidden = true;
-        state.page = 1;
-        state.hasMore = true;
-        state.products = [];
+    showSkeletons(els.productGrid, 8);
+
+    els.skeletonLoader.hidden = true;
+    els.infiniteEnd.hidden = true;
+
+    state.page = 1;
+    state.hasMore = true;
+    state.products = [];
     } else {
         els.infiniteLoader.hidden = false;
     }
@@ -572,6 +603,113 @@ function renderProducts(products, append) {
 }
 
 // ── Recommendations ─────────────────────────────────────────────────
+function getRealtimeUrl() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}/ws/recommendations`;
+}
+
+function initRecommendationSocket() {
+    if (!('WebSocket' in window) || state.recommendationSocket) return;
+
+    const socket = new WebSocket(getRealtimeUrl());
+    state.recommendationSocket = socket;
+
+    socket.addEventListener('open', () => {
+        state.realtimeReady = true;
+    });
+
+    socket.addEventListener('message', (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'recommendations') {
+                renderRecommendations(data);
+            } else if (data.type === 'error') {
+                throw new Error(data.detail || 'Recommendation stream failed');
+            }
+        } catch (err) {
+            console.warn('Realtime recommendation update failed:', err.message);
+            fallbackRecommendationRequest(state.pendingRecommendationTitle);
+        }
+    });
+
+    socket.addEventListener('close', () => {
+        state.realtimeReady = false;
+        state.recommendationSocket = null;
+    });
+
+    socket.addEventListener('error', () => {
+        state.realtimeReady = false;
+    });
+}
+
+function requestRealtimeRecommendations(title) {
+    if (!state.realtimeReady || !state.recommendationSocket) return false;
+
+    state.pendingRecommendationTitle = title;
+    state.recommendationSocket.send(JSON.stringify({
+        item_title: title,
+        top_n: 12,
+    }));
+    return true;
+}
+
+async function fallbackRecommendationRequest(title) {
+    if (!title) return;
+
+    clearTimeout(state.realtimeFallbackTimer);
+    state.realtimeFallbackTimer = setTimeout(async () => {
+        try {
+            const data = await API.post('/api/realtime/behavior', {
+                item_title: title,
+                top_n: 12,
+            });
+            renderRecommendations(data);
+        } catch {
+            await loadRecommendationsOverHttp(title);
+        }
+    }, 250);
+}
+
+function renderRecommendations(data) {
+    const recs = data.recommendations || [];
+
+    els.recsLoader.hidden = true;
+    els.recsStrip.hidden = false;
+
+    if (!recs.length) {
+        els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';
+        return;
+    }
+
+    els.recsStrip.innerHTML = recs.map((r) => `
+        <div class="rec-card" data-title="${r.title}">
+            <div class="rec-card__title">${r.title}</div>
+            <div class="rec-card__rating">
+                <div class="star-rating">${renderStars(r.rating || 0)}</div>
+                <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
+            </div>
+            <div class="rec-card__score">
+                Score: ${(r.hybrid_score || 0).toFixed(3)}
+                · Content: ${(r.content_score || 0).toFixed(2)}
+                · Collab: ${(r.collab_score || 0).toFixed(2)}
+            </div>
+        </div>
+    `).join('');
+
+    els.recsStrip.querySelectorAll('.rec-card').forEach((card) => {
+        card.addEventListener('click', () => {
+            loadRecommendations(card.dataset.title);
+        });
+    });
+
+    els.recsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function loadRecommendationsOverHttp(title) {
+    const data = await API.get(`/api/recommend/${encodeURIComponent(title)}?top_n=12`);
+    renderRecommendations(data);
+}
+
 async function loadRecommendations(title) {
     if (!state.modelReady) {
         toast('Build models first to get recommendations', 'info');
@@ -584,56 +722,17 @@ async function loadRecommendations(title) {
     els.recsStrip.innerHTML = '';
 
     try {
-        const data = await API.get(`/api/recommend/${encodeURIComponent(title)}?top_n=12`);
-        const recs = data.recommendations || [];
-
-        els.recsLoader.hidden = true;
-        els.recsStrip.hidden = false;
-
-        if (!recs.length) {
-            els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';
-            return;
+        if (!requestRealtimeRecommendations(title)) {
+            await fallbackRecommendationRequest(title);
         }
-
-        els.recsStrip.innerHTML = recs.map((r) => `
-    <div class="rec-card" data-title="${r.title}">
-        <div class="rec-card__title">${r.title}</div>
-
-        <div class="rec-card__rating">
-            <div class="star-rating">${renderStars(r.rating || 0)}</div>
-            <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
-        </div>
-
-        <div class="rec-card__score">
-            Score: ${(r.hybrid_score || 0).toFixed(3)}
-            · Content: ${(r.content_score || 0).toFixed(2)}
-            · Collab: ${(r.collab_score || 0).toFixed(2)}
-        </div>
-
-        <div class="feedback-buttons" style="margin-top:10px; display:flex; gap:10px;">
-            <button onclick="sendFeedback('${r.title}', 'up', this)">
-                👍
-            </button>
-
-            <button onclick="sendFeedback('${r.title}', 'down', this)">
-                👎
-            </button>
-        </div>
-    </div>
-`).join('');
-        // Click to chain recommendations
-        els.recsStrip.querySelectorAll('.rec-card').forEach((card) => {
-            card.addEventListener('click', () => {
-                loadRecommendations(card.dataset.title);
-            });
-        });
-
-        // Scroll to recs
-        els.recsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch {
-        els.recsLoader.hidden = true;
-        els.recsStrip.hidden = false;
-        els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">Could not load recommendations.</div>';
+        try {
+            await loadRecommendationsOverHttp(title);
+        } catch {
+            els.recsLoader.hidden = true;
+            els.recsStrip.hidden = false;
+            els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">Could not load recommendations.</div>';
+        }
     }
 }
 
@@ -667,6 +766,7 @@ async function handleBuild() {
         state.modelReady = true;
         toast(`Models built in ${data.build_time_seconds}s — ${data.items?.toLocaleString()} items`, 'success');
         updateStatus('ready', `Ready — ${data.items?.toLocaleString()} products`);
+        initRecommendationSocket();
         loadProducts();
         setupScrollObserver();
     } catch (err) {
@@ -690,6 +790,7 @@ async function checkStatus() {
         if (data.model_ready) {
             state.modelReady = true;
             updateStatus('ready', `Ready — ${count.toLocaleString()} products`);
+            initRecommendationSocket();
             loadProducts();
             setupScrollObserver();
         } else if (count > 0) {
@@ -946,45 +1047,4 @@ async function init() {
     initAuth().catch((e) => console.warn('Auth error:', e));
     checkStatus().catch((e) => console.warn('Status error:', e));
 }
-
 document.addEventListener('DOMContentLoaded', init);
-async function sendFeedback(item, feedback, button) {
-
-    const storageKey = `feedback_${item}`;
-
-    if (sessionStorage.getItem(storageKey)) {
-        return;
-    }
-
-    try {
-
-        const response = await fetch('/api/feedback', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                user_id: 'demo_user',
-                item: item,
-                feedback: feedback
-            })
-        });
-
-        if (response.ok) {
-
-            sessionStorage.setItem(storageKey, 'true');
-
-            const parent = button.parentElement;
-
-            parent.querySelectorAll('button').forEach(btn => {
-                btn.disabled = true;
-            });
-
-            toast('Thanks for your feedback!', 'success');
-        }
-
-    } catch (error) {
-        console.error(error);
-        toast('Feedback failed', 'error');
-    }
-}

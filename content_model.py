@@ -24,8 +24,8 @@ class ContentRecommender:
         self.matrix = self.vectorizer.fit_transform(self.df['combined'].fillna(''))
         # Do not compute full similarity matrix here to avoid OOM
         self._title_to_idx = {
-    t.lower(): i for i, t in enumerate(self.df['title'])
-}
+            t.lower(): i for i, t in enumerate(self.df['title'])
+        }
 
     def recommend(self, title, top_n=10):
         """

@@ -58,6 +58,34 @@ with st.sidebar:
     alpha = st.slider("α — Content-Based",  min_value=0.0, max_value=1.0, value=0.40, step=0.05)
     beta  = st.slider("β — Collaborative",  min_value=0.0, max_value=1.0, value=0.35, step=0.05)
     gamma = st.slider("γ — Sentiment",      min_value=0.0, max_value=1.0, value=0.25, step=0.05)
+    
+    # Live Normalized Weight Preview
+weights = {
+    "Content-Based": alpha,
+    "Collaborative": beta,
+    "Sentiment": gamma,
+}
+
+total_weight = sum(weights.values())
+
+st.markdown("###Live Normalized Weight Preview")
+
+if total_weight <= 0:
+    st.warning("All weights are set to zero. Please increase at least one weight to see the normalized distribution.")
+else:
+    normalized_weights = {
+        name: value / total_weight
+        for name, value in weights.items()
+    }
+
+    for name, value in normalized_weights.items():
+        st.write(f"**{name}:** {value:.2f}")
+        st.progress(value)
+
+    st.success(
+        f"Total Normalized Weight: {sum(normalized_weights.values()):.2f}"
+    )
+
 
     if st.button("Apply Weights", width='stretch'):
         if st.session_state.hybrid_model is not None:
