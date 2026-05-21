@@ -58,6 +58,55 @@ with st.sidebar:
     alpha = st.slider("α — Content-Based",  min_value=0.0, max_value=1.0, value=0.40, step=0.05)
     beta  = st.slider("β — Collaborative",  min_value=0.0, max_value=1.0, value=0.35, step=0.05)
     gamma = st.slider("γ — Sentiment",      min_value=0.0, max_value=1.0, value=0.25, step=0.05)
+    
+    # Live Normalized Weight Preview
+weights = {
+    "Content-Based": alpha,
+    "Collaborative": beta,
+    "Sentiment": gamma,
+}
+
+total_weight = sum(weights.values())
+
+st.markdown("###Live Normalized Weight Preview")
+
+if total_weight <= 0:
+    st.warning("All weights are set to zero. Please increase at least one weight to see the normalized distribution.")
+else:
+    normalized_weights = {
+        name: value / total_weight
+        for name, value in weights.items()
+    }
+
+    for name, value in normalized_weights.items():
+        st.write(f"**{name}:** {value:.2f}")
+        st.progress(value)
+
+    st.success(
+        f"Total Normalized Weight: {sum(normalized_weights.values()):.2f}"
+    )
+
+
+    total_weight = alpha + beta + gamma
+    if total_weight == 0:
+        effective_weights = {
+            "α Content": 1 / 3,
+            "β Collaborative": 1 / 3,
+            "γ Sentiment": 1 / 3,
+        }
+        st.warning("All raw weights are zero, so the model will use equal weights.")
+    else:
+        effective_weights = {
+            "α Content": alpha / total_weight,
+            "β Collaborative": beta / total_weight,
+            "γ Sentiment": gamma / total_weight,
+        }
+
+    st.caption("Effective weights used by the model")
+    weight_cols = st.columns(3)
+    for col, (label, value) in zip(weight_cols, effective_weights.items()):
+        col.metric(label, f"{value:.3f}")
+        col.progress(value)
 
     if st.button("Apply Weights", width='stretch'):
         if st.session_state.hybrid_model is not None:
