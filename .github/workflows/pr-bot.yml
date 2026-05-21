@@ -81,7 +81,7 @@ jobs:
       - name: Merge PR on approval
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.GH_PAT }}
           script: |
             const prNumber = context.payload.pull_request.number;
             const owner = context.repo.owner;
@@ -109,7 +109,7 @@ jobs:
                 body: 'Merged! Approved by @' + reviewer + '. Points will reflect at next 4 AM IST leaderboard refresh.'
               });
             } catch(e) {
-              console.log('Direct merge failed:', e.message);
+              console.log('Merge failed:', e.message);
               await github.rest.issues.createComment({
                 owner, repo, issue_number: prNumber,
                 body: 'Approved by @' + reviewer + '! Could not auto-merge: ' + e.message + '\n\nPlease merge manually.'
