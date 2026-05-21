@@ -2,7 +2,7 @@ name: GSSoC PR Bot
 
 on:
   pull_request_target:
-    types: [opened, reopened]
+    types: [opened, reopened, closed]
   pull_request_review:
     types: [submitted]
 
@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   welcome-pr:
-    if: github.event_name == 'pull_request_target'
+    if: github.event_name == 'pull_request_target' && github.event.action != 'closed'
     runs-on: ubuntu-latest
     steps:
       - name: Welcome PR and add mandatory labels
@@ -113,5 +113,36 @@ jobs:
               await github.rest.issues.createComment({
                 owner, repo, issue_number: prNumber,
                 body: 'Approved by @' + reviewer + '! Could not auto-merge: ' + e.message + '\n\nPlease merge manually.'
+              });
+            }
+
+  notify-rebase-on-merge:
+    if: github.event_name == 'pull_request_target' && github.event.action == 'closed' && github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify all open PRs to rebase
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const mergedPR = context.payload.pull_request;
+
+            const openPRs = await github.paginate(github.rest.pulls.list, {
+              owner, repo, state: 'open', per_page: 100
+            });
+
+            for (const pr of openPRs) {
+              if (pr.number === mergedPR.number) continue;
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: pr.number,
+                body: 'Main branch was just updated!\n\n'
+                  + 'PR #' + mergedPR.number + ' was just merged into main.\n\n'
+                  + 'Please rebase your branch to avoid conflicts:\n\n'
+                  + 'git fetch origin\n'
+                  + 'git rebase origin/main\n'
+                  + 'git push --force-with-lease\n\n'
+                  + 'Keeping your branch up to date prevents merge conflicts.'
               });
             }
