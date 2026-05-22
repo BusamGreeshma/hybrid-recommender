@@ -35,6 +35,8 @@ const state = {
     selectedSearchIdx: -1,
     isAuthSignUp: false,
     modelReady: false,
+    searchHistory: [],
+    selectedCategory: 'All Categories',
 };
 
 // ── DOM Elements ────────────────────────────────────────────────────
@@ -43,6 +45,7 @@ const $ = (id) => document.getElementById(id);
 const els = {
     searchInput: $('search-input'),
     searchDropdown: $('search-dropdown'),
+    searchHistory: $('search-history'),
     searchShortcut: $('search-shortcut'),
     authBtn: $('auth-btn'),
     authLabel: $('auth-label'),
@@ -73,6 +76,7 @@ const els = {
     weightAlpha: $('weight-alpha'),
     weightBeta: $('weight-beta'),
     weightGamma: $('weight-gamma'),
+    categoryFilter: $('category-filter'),
 };
 
 // ── Utilities ───────────────────────────────────────────────────────
@@ -271,6 +275,63 @@ async function handleSearch(query) {
     }, 200);
 }
 
+function addToSearchHistory(query) {
+    if (!query || !query.trim()) return;
+
+    state.searchHistory = [
+        query,
+        ...state.searchHistory.filter(item => item !== query)
+    ].slice(0, 5);
+
+    renderSearchHistory();
+}
+
+function renderSearchHistory() {
+    if (!state.searchHistory.length) {
+        els.searchHistory.innerHTML = '';
+        els.searchHistory.classList.remove('active');
+        return;
+    }
+
+    els.searchHistory.innerHTML = `
+        <div class="search-history__header">
+            <span>Recent Searches</span>
+            <button class="clear-history-btn" id="clear-history-btn">
+                Clear
+            </button>
+        </div>
+
+        ${state.searchHistory.map(item => `
+            <div class="search-history__item" data-query="${item}">
+                ${item}
+            </div>
+        `).join('')}
+    `;
+
+    els.searchHistory.classList.add('active');
+
+    // Click history item
+    els.searchHistory.querySelectorAll('.search-history__item')
+        .forEach((el) => {
+            el.addEventListener('click', () => {
+                const query = el.dataset.query;
+                els.searchInput.value = query;
+                loadSearchResults(query);
+                handleSearch(query);
+            });
+        });
+
+    // Clear history
+    const clearBtn = document.getElementById('clear-history-btn');
+
+    if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+            state.searchHistory = [];
+            renderSearchHistory();
+        });
+    }
+}
+
 function renderSearchDropdown(results, query) {
     if (!results.length) {
         els.searchDropdown.innerHTML = `
@@ -312,6 +373,7 @@ function highlightMatch(text, query) {
 }
 
 function selectSearchResult(title) {
+    addToSearchHistory(title);
     els.searchInput.value = title;
     closeSearchDropdown();
     loadSearchResults(title);
@@ -361,7 +423,14 @@ async function loadProducts(append = false) {
         }
 
         renderProducts(products, append);
-        els.productCount.textContent = `${state.products.length} products loaded`;
+        const visibleCount =
+    state.selectedCategory === 'All Categories'
+        ? products.length
+        : products.filter(
+            p => p.category === state.selectedCategory
+        ).length;
+
+els.productCount.textContent = `${visibleCount} products loaded`;
 
         // Show load more if there might be more
         els.loadMoreContainer.hidden = products.length < state.perPage;
@@ -394,8 +463,13 @@ function renderProducts(products, append) {
     if (!append) state.products = [];
 
     const fragment = document.createDocumentFragment();
-
-    products.forEach((p, i) => {
+    const filteredProducts =
+    state.selectedCategory === 'All Categories'
+        ? products
+        : products.filter(
+            p => p.category === state.selectedCategory
+        );
+    filteredProducts.forEach((p, i) => {
         state.products.push(p);
         const card = document.createElement('div');
         card.className = 'product-card';
@@ -582,13 +656,29 @@ function bindEvents() {
     els.searchInput.addEventListener('input', (e) => handleSearch(e.target.value));
     els.searchInput.addEventListener('keydown', handleSearchKeydown);
     els.searchInput.addEventListener('focus', () => {
-        if (els.searchInput.value) handleSearch(els.searchInput.value);
-    });
+    if (els.searchInput.value) {
+        handleSearch(els.searchInput.value);
+    } else {
+        renderSearchHistory();
+    }
+});
+    els.categoryFilter.addEventListener('change', (e) => {
+    state.selectedCategory = e.target.value;
+
+    if (els.searchInput.value.trim()) {
+        loadSearchResults(els.searchInput.value);
+    } else {
+        loadProducts();
+    }
+});
 
     // Close dropdown on outside click
     document.addEventListener('click', (e) => {
-        if (!e.target.closest('.header__search')) closeSearchDropdown();
-    });
+       if (!e.target.closest('.header__search')) {
+    closeSearchDropdown();
+    els.searchHistory.classList.remove('active');
+}
+});
 
     // Auth
     els.authBtn.addEventListener('click', () => {
@@ -647,10 +737,26 @@ async function init() {
 
     // Initialize Supabase client from backend config (no hardcoded keys)
     await initSupabase();
-
+    loadCategories();
     // Run auth and status independently — neither blocks the other
     initAuth().catch((e) => console.warn('Auth error:', e));
     checkStatus().catch((e) => console.warn('Status error:', e));
+}
+
+async function loadCategories() {
+    try {
+        const data = await API.get('/api/categories');
+        const categories = data.categories || [];
+
+        els.categoryFilter.innerHTML = `
+            <option value="All Categories">All Categories</option>
+            ${categories.map(cat => `
+                <option value="${cat}">${cat}</option>
+            `).join('')}
+        `;
+    } catch (err) {
+        console.error('Failed to load categories', err);
+    }
 }
 
 document.addEventListener('DOMContentLoaded', init);
