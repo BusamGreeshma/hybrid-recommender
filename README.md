@@ -1,32 +1,27 @@
 ```
-
 ╔══════════════════════════════════════════════════════════════════╗
 ║                                                                  ║
-║    H Y B R I D R E C                                  ║
+║    H Y B R I D R E C                                             ║
 ║    ─────────────────────────────────────────────────────────     ║
-║    Hybrid Recommender System · Leona Goel      
+║    Hybrid Recommender System · Leona Goel                        ║
 ║                                                                  ║
 ╚══════════════════════════════════════════════════════════════════╝
 ```
+
+<div align="center">
+
 [![CI](https://github.com/leonagoel/hybrid-recommender/actions/workflows/ci.yml/badge.svg)](https://github.com/leonagoel/hybrid-recommender/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/leonagoel/hybrid-recommender)](https://github.com/leonagoel/hybrid-recommender/blob/main/LICENSE)
 [![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)
-<div align="center">
-
 [![Contributors](https://img.shields.io/github/contributors/leonagoel/hybrid-recommender.svg?style=flat-square)](https://github.com/leonagoel/hybrid-recommender/graphs/contributors)
 [![PRs Welcome](https://img.shields.io/badge/PRs_welcome-brightgreen.svg?style=flat-square)](https://makeapullrequest.com)
 [![GSSoC 2026](https://img.shields.io/badge/GSSoC_2026-orange.svg?style=flat-square)](https://gssoc.girlscript.tech/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
-
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Supabase](https://img.shields.io/badge/Supabase-PostgreSQL-3FCF8E?style=flat-square&logo=supabase&logoColor=white)](https://supabase.com)
 [![scikit-learn](https://img.shields.io/badge/scikit--learn-ML-F7931E?style=flat-square&logo=scikit-learn&logoColor=white)](https://scikit-learn.org)
 [![NLTK](https://img.shields.io/badge/NLTK-VADER_NLP-154f3c?style=flat-square)](https://nltk.org)
-[![MIT License](https://img.shields.io/badge/License-MIT-ff6b35?style=flat-square)](LICENSE)
-[![CI](https://github.com/leonagoel/hybrid-recommender/actions/workflows/ci.yml/badge.svg)](https://github.com/leonagoel/hybrid-recommender/actions/workflows/ci.yml)
-[![License](https://img.shields.io/github/license/leonagoel/hybrid-recommender)](https://github.com/leonagoel/hybrid-recommender/blob/main/LICENSE)
-[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)
 
 </div>
 
@@ -172,7 +167,7 @@ hybrid-recommender/
 
 ```bash
 # 1 — Clone & install
-git clone https://github.com/leonagoel/hybrid-recommender.git 
+git clone https://github.com/leonagoel/hybrid-recommender.git
 cd hybrid-recommender
 pip install -r requirements.txt
 ```
@@ -238,11 +233,12 @@ GET  /api/task/abc123  →  { "status": "SUCCESS", "result": { ... } }
 ### Alternative — Streamlit UI *(no Supabase required)*
 
 ```bash
-# After cloning and installing dependencies (step 1 above)
 streamlit run app.py
 ```
 
 Upload any CSV file, click **Build Models**, then enter an item name or User ID to get recommendations directly in your browser — no database or server setup needed.
+
+---
 
 ## 06 — API Reference
 
@@ -261,12 +257,15 @@ GET    /api/purchases/{user_id}
 POST   /api/purchases
 ```
 
+---
+
 ## 07 — Evaluation
 
 ```python
 # Run evaluation benchmarks
 python evaluation.py
 ```
+
 Benchmarks **Content-Only**, **Collab-Only**, **Sentiment-Only**, and **Hybrid** across:
 
 ```text
@@ -291,60 +290,43 @@ NDCG@K       —  ranking quality (discounted cumulative gain)
 
 ---
 
+## 09 — Screenshots
+
+### Home Page
+![Home Page](assets/homepage.png)
+
+### Recommendation Results
+![Recommendations](assets/recommendations.png)
+
+### API Documentation
+![Swagger Docs](assets/swagger.png)
+
 ---
 
-## 09 — Troubleshooting
+## 10 — Troubleshooting
 
 ### ModuleNotFoundError
-
-If you see:
-
-```bash
-ModuleNotFoundError: No module named 'xyz'
-```
-
-Run:
 
 ```bash
 pip install -r requirements.txt
 ```
 
----
-
 ### Port Already In Use
-
-If port 8000 is busy:
 
 ```bash
 python -m uvicorn backend.main:app --port 8001
 ```
 
----
-
 ### NLTK VADER Download Error
-
-Run Python shell:
 
 ```python
 import nltk
 nltk.download('vader_lexicon')
 ```
 
----
-
-### Streamlit Not Found
-
-Install Streamlit manually:
-
-```bash
-pip install streamlit
-```
-
----
-
 ### Supabase Connection Error
 
-Check your `.env` file:
+Check your `.env` file — no extra spaces, no quotes, correct project credentials:
 
 ```env
 SUPABASE_URL=your_url
@@ -352,64 +334,23 @@ SUPABASE_ANON_KEY=your_key
 SUPABASE_SERVICE_KEY=your_service_key
 ```
 
-Make sure:
-- No extra spaces
-- No quotes
-- Correct project credentials
-
 ---
 
-## 10 — Setup Verification
-
-### Backend Verification
-
-Run:
+## 11 — Setup Verification
 
 ```bash
+# Backend
 python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
-```
+# Visit: http://localhost:8000/api/status → { "status": "ok" }
 
-Open:
-
-```text
-http://localhost:8000/api/status
-```
-
-Expected response:
-
-```json
-{
-  "status": "ok"
-}
-```
-
----
-
-### Streamlit Verification
-
-Run:
-
-```bash
+# Streamlit
 streamlit run app.py
+# Browser opens automatically with CSV upload interface
 ```
 
-Expected:
-- Browser opens automatically
-- CSV upload interface visible
-- Recommendation UI loads successfully
-
 ---
 
-### Dataset Upload Verification
-
-Upload any sample CSV and verify:
-- Dataset loads without errors
-- Models build successfully
-- Recommendations appear
-
----
-
-## 11 — Beginner Contributor Tips
+## 12 — Beginner Contributor Tips
 
 ### Sync Your Fork Before Starting
 
@@ -419,28 +360,13 @@ git fetch upstream
 git merge upstream/main
 ```
 
----
-
 ### Resolve Merge Conflicts
 
-If conflicts happen:
-
 1. Open conflicted files
-2. Remove conflict markers:
-   ```text
-   <<<<<<<
-   =======
-   >>>>>>>
-   ```
-3. Keep correct code
-4. Save file
-5. Commit again
-
----
+2. Remove conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`)
+3. Keep correct code, save, then commit
 
 ### Pull Request Checklist
-
-Before submitting PR:
 
 - [ ] Project runs successfully
 - [ ] README formatting checked
@@ -448,6 +374,8 @@ Before submitting PR:
 - [ ] Branch name follows guidelines
 - [ ] Commit message follows convention
 - [ ] PR linked to issue
+
+---
 
 ## License
 
@@ -463,10 +391,11 @@ B.Tech CSE · Vellore Institute of Technology
 National Finalist · Smart India Hackathon 2025 · Top 8% of 950+ Teams
 ```
 
-
 [![LinkedIn](https://img.shields.io/badge/Connect-LinkedIn-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/leona-goel)
 [![GitHub](https://img.shields.io/badge/Follow-GitHub-181717?style=flat-square&logo=github&logoColor=white)](https://github.com/leonagoel)
 [![Email](https://img.shields.io/badge/Email-leona.goel123%40gmail.com-EA4335?style=flat-square&logo=gmail&logoColor=white)](mailto:leona.goel123@gmail.com)
+
+---
 
 ## Contributors
 
@@ -484,22 +413,10 @@ Thanks to all the amazing people who contribute to this project ❤️
 
 | Contributor | PRs Merged | Joined |
 |-------------|------------|---------|
-| @username1 | 15 | Jan 2026 |
-| @username2 | 12 | Feb 2026 |
-| @username3 | 10 | Mar 2026 |
-| @username4 | 8 | Apr 2026 |
-| @username5 | 6 | May 2026 |
+| @mansigite19 | 3 | May 2026 |
+| @2024itb047samata | 2 | May 2026 |
+| @vavilalarahul | 1 | May 2026 |
 
 > This table is manually maintained and updated weekly.
 
 </div>
-## 09 — Screenshots
-
-### Home Page
-![Home Page](assets/homepage.png)
-
-### Recommendation Results
-![Recommendations](assets/recommendations.png)
-
-### API Documentation
-![Swagger Docs](assets/swagger.png)
