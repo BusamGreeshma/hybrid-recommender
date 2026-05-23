@@ -1,3 +1,4 @@
+import { initBenchmarkingDashboard } from './js/benchmarking.js';
 
 // ===== THEME TOGGLE =====
 const themeToggle = document.getElementById('theme-toggle');
@@ -1364,32 +1365,44 @@ function setupScrollObserver() {
             rootMargin: '0px 0px 200px 0px',
             threshold: 0,
         }
-
     );
-  } catch (err) {
-    console.warn('[app] Config fetch failed — running offline.', err);
-  }
+    
+    state.scrollObserver.observe(els.scrollSentinel);
+}
 
-  // 2. Auth
-  if (supabaseClient) {
-    initAuth(supabaseClient);
-    bindAuthEvents();
-    const { data: { session } } = await supabaseClient.auth.getSession();
-    if (!session) await signInAsGuest();
-  }
+function destroyScrollObserver() {
+    if (state.scrollObserver) {
+        state.scrollObserver.disconnect();
+        state.scrollObserver = null;
+    }
+}
 
-  // 3. UI infrastructure
-  initModalDismiss();
-  startStatusPoller(30_000);
+function addToSearchHistory(query) {
+    if (!state.searchHistory) state.searchHistory = [];
+    state.searchHistory = [query, ...state.searchHistory.filter(q => q !== query)].slice(0, 10);
+    renderSearchHistory();
+}
 
-  // 4. Dataset management
-  bindUploadHandler((data) => {
-    setState({ datasetLoaded: true, productCount: data.rows ?? 0 });
-    loadProducts(1);
-    loadCategories();
-  });
-  bindBuildModelsHandler(() => setState({ modelsBuilt: true }));
+function renderSearchHistory() {
+    if (!state.searchHistory || !state.searchHistory.length) {
+        els.searchHistory.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:13px;">No search history</div>';
+        return;
+    }
 
+    els.searchHistory.innerHTML = `
+        <div class="search-history__list">
+            ${state.searchHistory.map(query => `
+                <div class="search-history__item" data-query="${query}">
+                    <span style="font-size:14px;">🕐</span>
+                    <span>${query}</span>
+                </div>
+            `).join('')}
+        </div>
+        <button id="clear-history-btn" class="btn btn--link" style="width:100%;padding:12px;border-top:1px solid var(--border);border-radius:0;font-size:12px;">
+            Clear History
+        </button>
+    `;
+    
     els.searchHistory.classList.add('active');
 
     // Click history item
@@ -1823,6 +1836,9 @@ async function init() {
     // Run auth and status independently — neither blocks the other
     initAuth().catch((e) => console.warn('Auth error:', e));
     checkStatus().catch((e) => console.warn('Status error:', e));
+
+    // Benchmarking dashboard
+    initBenchmarkingDashboard();
 }
 
 async function loadCategories() {
