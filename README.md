@@ -3,7 +3,7 @@
 ║                                                                  ║
 ║    H Y B R I D R E C                                             ║
 ║    ─────────────────────────────────────────────────────────     ║
-║    Hybrid Recommender System · Leona Goel      
+║    Hybrid Recommender System · Leona Goel                        ║
 ║                                                                  ║
 ╚══════════════════════════════════════════════════════════════════╝
 ```
@@ -164,7 +164,7 @@ hybrid-recommender/
 
 ```bash
 # 1 — Clone & install
-git clone https://github.com/Bhumi1701/hybrid-recommender.git
+git clone https://github.com/leonagoel/hybrid-recommender.git
 cd hybrid-recommender
 pip install -r requirements.txt
 ```
@@ -199,6 +199,8 @@ streamlit run app.py
 ```
 
 Upload any CSV file, click **Build Models**, then enter an item name or User ID to get recommendations directly in your browser — no database or server setup needed.
+
+---
 
 ## 06 — API Reference
 
@@ -247,8 +249,6 @@ NDCG@K       —  ranking quality (discounted cumulative gain)
 ✓  SQL injection safe (Supabase SDK parameterized queries)
 ```
 
----
-
 ## License
 
 MIT — see [`LICENSE`](LICENSE)
@@ -263,19 +263,8 @@ B.Tech CSE · Vellore Institute of Technology
 National Finalist · Smart India Hackathon 2025 · Top 8% of 950+ Teams
 ```
 
-
 [![LinkedIn](https://img.shields.io/badge/Connect-LinkedIn-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/leona-goel)
 [![GitHub](https://img.shields.io/badge/Follow-GitHub-181717?style=flat-square&logo=github&logoColor=white)](https://github.com/leonagoel)
 [![Email](https://img.shields.io/badge/Email-leona.goel123%40gmail.com-EA4335?style=flat-square&logo=gmail&logoColor=white)](mailto:leona.goel123@gmail.com)
 
 </div>
-## 09 — Screenshots
-
-### Home Page
-![Home Page](assets/homepage.png)
-
-### Recommendation Results
-![Recommendations](assets/recommendations.png)
-
-### API Documentation
-![Swagger Docs](assets/swagger.png)
