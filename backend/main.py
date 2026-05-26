@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 FastAPI Backend for the Hybrid Recommender System — v3 (Supabase).
 Integrates PostgreSQL full-text search, Supabase auth, and the improved hybrid model.
@@ -646,7 +648,14 @@ def search_items(
             'review_count': p.get('review_count', 0), 'rank': p.get('rank', 0.0),
         })
 
-    payload = {"results": results, "total": len(results), "query": query, "is_fallback": not query}
+    result_count = len(results)
+    payload = {
+        "results": results,
+        "count": result_count,
+        "total": result_count,
+        "query": query,
+        "is_fallback": not query,
+    }
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
     return payload
@@ -882,6 +891,9 @@ def get_recommendations(
         raise HTTPException(404, "Item not found or no recommendations.")
 
     payload = {
+        "results": recs,
+        "count": len(recs),
+        "query": query_title,
         "query_item": query_title,
         "recommendations": recs,
         "weights": models["hybrid"].get_weights(),

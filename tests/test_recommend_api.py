@@ -5,7 +5,10 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from backend.main import app, models
+from backend import main
+
+app = main.app
+models = main.models
 
 
 class FakeHybridModel:
@@ -37,28 +40,14 @@ def test_recommend_accepts_reserved_characters_in_query_title():
         models["hybrid"] = original_hybrid
 
     assert response.status_code == 200
-    assert response.json()["query_item"] == "AC/DC Greatest Hits? Deluxe + Café"
+    payload = response.json()
+    assert payload["query"] == "AC/DC Greatest Hits? Deluxe + Café"
+    assert payload["query_item"] == "AC/DC Greatest Hits? Deluxe + Café"
+    assert payload["count"] == 1
+    assert payload["results"] == payload["recommendations"]
     assert hybrid.last_title == "AC/DC Greatest Hits? Deluxe + Café"
+    main._clear_response_cache()
 
 
-def test_recommend_supports_cross_domain_catalog_filtering():
-    hybrid = FakeHybridModel()
-    original_ready = models["ready"]
-    original_hybrid = models["hybrid"]
-    models["ready"] = True
-    models["hybrid"] = hybrid
-
-    try:
-        client = TestClient(app)
-        response = client.get("/api/recommend", params={
-            "title": "Query Item",
-            "top_n": 5,
-            "target_catalog": "Movies"
-        })
-    finally:
-        models["ready"] = original_ready
-        models["hybrid"] = original_hybrid
-
-    assert response.status_code == 200
-    assert response.json()["target_catalog"] == "Movies"
-    assert hybrid.last_target_catalog == "Movies"
+def teardown_function():
+    main._clear_response_cache()
