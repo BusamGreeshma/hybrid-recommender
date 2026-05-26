@@ -306,7 +306,52 @@ class HybridRecommender:
             results.append(result)
 
         results.sort(key=lambda x: x['hybrid_score'], reverse=True)
+        if not results:
+            return self.get_popular_fallback_items(top_n=top_n, exclude_title=title)
+
         return results[:top_n]
+
+    def recommend_for_user(self, user_id, top_n=10, explain=False):
+        """
+        Get recommendations for a specific user.
+        If the user is new (or no collab model exists), fallback to popular items.
+        """
+        if self.collab_model is None or user_id not in self.collab_model._user_to_idx:
+            # Cold start fallback for new user
+            return self._cold_start_fallback(title=None, top_n=top_n)
+
+        collab_recs = self.collab_model.predict_for_user(user_id, top_n=top_n * 3)
+        
+        results = []
+        for r in collab_recs[:top_n]:
+            item_title = r['title']
+            
+            row_data = self.content_model.df[self.content_model.df['title'] == item_title]
+            category = self._category_map.get(item_title, '')
+            description = ''
+            top_reviews = []
+            if len(row_data) > 0:
+                description = str(row_data.iloc[0].get('description', ''))[:200]
+                tp = row_data.iloc[0].get('top_reviews', [])
+                top_reviews = tp if isinstance(tp, list) else []
+
+            hybrid_score = r.get('predicted_score', 0.0)
+            rating = self._rating_map.get(item_title, 0.0)
+            
+            result = {
+                'title': item_title,
+                'content_score': 0.0,
+                'collab_score': round(hybrid_score, 4),
+                'sentiment_score': round((self._sentiment_map.get(item_title, 0.0) + 1) / 2, 4),
+                'hybrid_score': round(hybrid_score, 4),
+                'rating': round(rating, 2),
+                'category': category,
+                'description': description,
+                'top_reviews': top_reviews,
+            }
+            results.append(result)
+            
+        return results
 
     def _build_explanation(
         self,
@@ -370,7 +415,7 @@ class HybridRecommender:
     def _cold_start_fallback(self, title, top_n):
         """
         Fallback when no model data exists for the title.
-        Returns popular items from the same category.
+        Returns popular items from the same category or global popularity.
         """
         if self.item_df is None:
             return []
@@ -383,15 +428,40 @@ class HybridRecommender:
             if len(cat_items) >= top_n:
                 df = cat_items
 
+        return self.get_popular_fallback_items(
+            top_n=top_n,
+            source_df=df,
+            exclude_title=title,
+        )
+
+    def get_popular_fallback_items(self, top_n=5, source_df=None, exclude_title=None):
+        """
+        Return globally popular items when personalization produces no candidates.
+        """
+        if self.item_df is None and source_df is None:
+            return []
+
+        df = source_df if source_df is not None else self.item_df
+        if df is None or len(df) == 0:
+            return []
+
+        df = df.copy()
+        if exclude_title is not None and 'title' in df.columns:
+            df = df[df['title'] != exclude_title]
+
         # Sort by Bayesian rating
         if 'rating' in df.columns and 'review_count' in df.columns:
-            df = df.copy()
             df['_bayesian'] = df.apply(
                 lambda r: bayesian_rating(r['rating'], r.get('review_count', 0)), axis=1
             )
-            df = df.sort_values('_bayesian', ascending=False)
+            df = df.sort_values(
+                ['_bayesian', 'review_count'],
+                ascending=[False, False],
+            )
         elif 'rating' in df.columns:
             df = df.sort_values('rating', ascending=False)
+        elif 'review_count' in df.columns:
+            df = df.sort_values('review_count', ascending=False)
 
         results = []
         for _, row in df.head(top_n).iterrows():
