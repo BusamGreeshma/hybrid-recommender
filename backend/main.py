@@ -261,26 +261,6 @@ def _set_cache_headers(response: Response, status: str) -> None:
     response.headers["X-Cache"] = status
 
 
-def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
-    if not contents:
-        raise HTTPException(400, "Uploaded file is empty.")
-    if len(contents) > MAX_UPLOAD_BYTES:
-        raise HTTPException(413, f"Uploaded file exceeds {MAX_UPLOAD_BYTES} bytes.")
-    if b"\x00" in contents[:4096]:
-        raise HTTPException(400, "Uploaded file appears to be binary.")
-
-    sample = contents[:4096].lstrip()
-    lowered_name = filename.lower()
-    if ext == ".json":
-        if not sample.startswith((b"{", b"[")):
-            raise HTTPException(400, "JSON uploads must contain JSON content.")
-    elif ext == ".csv":
-        lowered_sample = sample[:128].lower()
-        if lowered_sample.startswith((b"{", b"[", b"<!doctype", b"<html", b"<?xml")):
-            raise HTTPException(400, "CSV uploads must contain CSV content.")
-        if not lowered_name.endswith(".csv"):
-            raise HTTPException(400, "CSV uploads must use a .csv filename.")
-def _get_rate_limit(limit_env: str, default_limit: int) -> int:
     try:
         limit = int(os.environ.get(limit_env, str(default_limit)))
     except ValueError:
@@ -335,26 +315,6 @@ def _apply_rate_limit(
     response.headers["x-ratelimit-reset"] = str(reset_time)
     return None
 
-
-def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
-    if not contents:
-        raise HTTPException(400, "Uploaded file is empty.")
-    if len(contents) > MAX_UPLOAD_BYTES:
-        raise HTTPException(413, f"Uploaded file exceeds {MAX_UPLOAD_BYTES} bytes.")
-    if b"\x00" in contents[:4096]:
-        raise HTTPException(400, "Uploaded file appears to be binary.")
-
-    sample = contents[:4096].lstrip()
-    lowered_name = filename.lower()
-    if ext == ".json":
-        if not sample.startswith((b"{", b"[")):
-            raise HTTPException(400, "JSON uploads must contain JSON content.")
-    elif ext == ".csv":
-        lowered_sample = sample[:128].lower()
-        if lowered_sample.startswith((b"{", b"[", b"<!doctype", b"<html", b"<?xml")):
-            raise HTTPException(400, "CSV uploads must contain CSV content.")
-        if not lowered_name.endswith(".csv"):
-            raise HTTPException(400, "CSV uploads must use a .csv filename.")
 
 
 def _extract_bearer_token(value: str | None) -> str:
@@ -902,19 +862,26 @@ def autocomplete_products(
 
 
 def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
+    """Validate raw upload bytes: empty, size, binary, and content-type checks."""
     if not contents:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-    if b'\x00' in contents:
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"Uploaded file exceeds {MAX_UPLOAD_BYTES} bytes.")
+    if b"\x00" in contents[:4096]:
         raise HTTPException(status_code=400, detail="Uploaded file appears to be binary.")
     try:
         decoded = contents.decode("utf-8")
     except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="Uploaded file appears to be binary.")
-    
+        raise HTTPException(status_code=400, detail="Uploaded file must be UTF-8 encoded.")
+
     stripped = decoded.strip()
+    lowered_name = filename.lower()
     if ext == ".csv":
-        if (stripped.startswith("{") and stripped.endswith("}")) or (stripped.startswith("[") and stripped.endswith("]")):
+        lowered_sample = stripped[:128].lower()
+        if lowered_sample.startswith(("{", "[", "<!doctype", "<html", "<?xml")):
             raise HTTPException(status_code=400, detail="CSV uploads must contain CSV content.")
+        if not lowered_name.endswith(".csv"):
+            raise HTTPException(status_code=400, detail="CSV uploads must use a .csv filename.")
     elif ext == ".json":
         if not (stripped.startswith("{") or stripped.startswith("[")):
             raise HTTPException(status_code=400, detail="JSON uploads must contain JSON content.")
@@ -922,7 +889,7 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
         try:
             json.loads(stripped)
         except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="JSON uploads must contain JSON content.")
+            raise HTTPException(status_code=400, detail="JSON uploads must contain valid JSON.")
 
 
 # ── Upload ────────────────────────────────────────────────────────────
