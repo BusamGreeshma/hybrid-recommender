@@ -20,7 +20,7 @@ class FakeHybrid:
     def get_weights(self):
         return {"alpha": 0.4, "beta": 0.35, "gamma": 0.25}
 
-    def recommend(self, item_title, top_n=10, explain=False, *args, **kwargs):
+    def recommend(self, item_title, top_n=10, explain=False, target_catalog=None, **kwargs):
         self.calls += 1
         return [{"title": f"{item_title} match", "hybrid_score": 0.98}][:top_n]
 

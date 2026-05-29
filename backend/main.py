@@ -1368,7 +1368,10 @@ def get_recommendations(
         has_history = user_id in models["collab"]._user_to_idx
 
     payload = {
+        "query": query_title,
         "query_item": query_title,
+        "count": len(recs),
+        "results": recs,
         "recommendations": recs,
         "weights": models["hybrid"].get_weights(),
         "explain": explain,
