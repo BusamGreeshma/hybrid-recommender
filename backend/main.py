@@ -383,6 +383,13 @@ def _admin_access_dep(request: Request) -> None:
     _require_admin_access(request)
 
 
+def _get_feedback_storage_client():
+    client = get_supabase_admin()
+    if client is None:
+        raise HTTPException(status_code=500, detail="Feedback storage is unavailable.")
+    return client
+
+
 # CORS
 allowed_origins_env = os.environ.get("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000")
 allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",")]
@@ -1822,20 +1829,34 @@ def get_trending_products(
 @app.post("/api/feedback")
 def submit_feedback(
     data: FeedbackCreate,
+    request: Request,
+    _csrf: None = Depends(csrf_header_dep),
 ):
+    feedback_client = _get_feedback_storage_client()
+    feedback_record = {
+        "user_id": data.user_id,
+        "item": data.item,
+        "feedback": data.feedback,
+        "metadata": {
+            "source_ip": request.client.host if request.client else None,
+            "user_agent": request.headers.get("user-agent", ""),
+        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
 
- logger.info(
-        "Feedback received: user=%s item=%s thumbs=%s",
-        data.user_id, data.item, data.thumbs
-    )
- return {
+    try:
+        result = feedback_client.table("feedback_submissions").insert(feedback_record).execute()
+    except Exception as exc:
+        logger.error("Failed to persist feedback submission: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to store feedback.")
+
+    stored_feedback = feedback_record
+    if getattr(result, "data", None):
+        stored_feedback = result.data[0] if isinstance(result.data, list) else result.data
+
+    return {
         "message": "Feedback submitted successfully",
-        "feedback": {
-            "user_id": data.user_id,
-            "item": data.item,
-            "feedback": data.feedback,
-            "thumbs": data.thumbs,
-        }
+        "feedback": stored_feedback,
     }
 
 # ── Export Dataset ────────────────────────────────────────────────────
