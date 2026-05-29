@@ -2002,7 +2002,6 @@ document.querySelectorAll(".product-card").forEach(card => {
 });
 
 document.addEventListener('DOMContentLoaded', init);
-document.addEventListener('DOMContentLoaded', init);
 
 // ── Language Toggle ─────────────────────────────────────────────────
 let currentLang = 'EN';
